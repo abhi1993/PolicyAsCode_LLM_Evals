@@ -22,7 +22,7 @@ package main
       )
 
       anthropicClient = anthropic.NewClient(
-         option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")), // or set ANTHROPIC_API_KEY env var
+        option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
      )
       // Tool 1: Generate Policy                                                                                                                                                              
       s.AddTool(mcp.NewTool("generate_policy",                                                                                                                                              
@@ -41,7 +41,13 @@ package main
       s.AddTool(mcp.NewTool("generate_policy_tests",
           mcp.WithDescription("Generate policy tests"),
           mcp.WithString("prompt", mcp.Required(), mcp.Description("English language description of the policy to evaluate")),
-          ), evaluatePolicyHandler)
+          ), generatePolicyTestsHandler)
+
+      // Tool 4: Run policy tests
+      s.AddTool(mcp.NewTool("run_kyverno_est",
+          mcp.WithDescription("Run a kyverno policy tests"),
+          mcp.WithString("prompt", mcp.Required(), mcp.Description("Given a policy, policy tests and sample resource file run the test.")),
+          ), runPolicyTestsHandler)
 
       if err := server.ServeStdio(s); err != nil {
           log.Fatal(err)
@@ -126,6 +132,30 @@ func generatePolicyTestsHandler(ctx context.Context, req mcp.CallToolRequest) (*
 }
 
 func evaluatePolicyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {                                                                                     
+   args := req.Params.Arguments.(map[string]any)
+   englishPrompt := args["prompt"].(string)
+   msg, err := anthropicClient.Messages.New(ctx, anthropic.MessageNewParams{
+      Model:     anthropic.ModelClaudeSonnet4_5,
+      MaxTokens: 2048,
+      System: []anthropic.TextBlockParam{
+         {Text: "You are a kyverno expert. When given an english language prompt description for a policy, generate a suite of 10 tests for it."},
+      },
+      Messages: []anthropic.MessageParam{
+         anthropic.NewUserMessage(anthropic.NewTextBlock(
+            fmt.Sprintf("Please generate a test suite for a policy that does the following: %s. In your suite also include sample resources. Return it as a JSON list with key value pairs of, test and resource yamls.", englishPrompt),
+            )),
+         },
+   })
+
+   if err != nil {
+      return nil, err
+   }
+
+   result := fmt.Sprintf("JSON list of tests and resources:%s\n", msg)
+   return mcp.NewToolResultText(result), nil
+}
+
+func runPolicyTestsHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
    args := req.Params.Arguments.(map[string]any)
    englishPrompt := args["prompt"].(string)
    msg, err := anthropicClient.Messages.New(ctx, anthropic.MessageNewParams{

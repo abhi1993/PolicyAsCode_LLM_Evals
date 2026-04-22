@@ -4,6 +4,7 @@ package main
       "context"                                                                                                                                                                               
       "fmt"                                                                                                                                                                                 
       "log"
+      "os"
 
       "github.com/anthropics/anthropic-sdk-go"
       "github.com/anthropics/anthropic-sdk-go/option"
@@ -21,7 +22,7 @@ package main
       )
 
       anthropicClient = anthropic.NewClient(
-         option.WithAPIKey(""), // or set ANTHROPIC_API_KEY env var
+         option.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")), // or set ANTHROPIC_API_KEY env var
      )
       // Tool 1: Generate Policy                                                                                                                                                              
       s.AddTool(mcp.NewTool("generate_policy",                                                                                                                                              
@@ -34,15 +35,14 @@ package main
       s.AddTool(mcp.NewTool("explain_policy",                                                                                                                                               
           mcp.WithDescription("Explain what a given policy does in plain English"),                                                                                                           
           mcp.WithString("policyContents", mcp.Required(), mcp.Description("The policy YAML or text to explain")),
-      ), explainPolicyHandler)                                                                                                                                                                
-                                                                                                                                                                                            
-      // Tool 3: Evaluate Policy
-      s.AddTool(mcp.NewTool("evaluate_policy",
-          mcp.WithDescription("Evaluate whether a resource would pass or fail a given policy"),                                                                                               
-          mcp.WithString("policy", mcp.Required(), mcp.Description("The policy to evaluate")),                                                                                                
-          mcp.WithString("resource", mcp.Required(), mcp.Description("The resource or request to evaluate against")),                                                                         
-      ), evaluatePolicyHandler)                                                                                                                                                               
-                                                                                                                                                                                            
+      ), explainPolicyHandler)
+
+      // Tool 3: Generate policy tests
+      s.AddTool(mcp.NewTool("generate_policy_tests",
+          mcp.WithDescription("Generate policy tests"),
+          mcp.WithString("prompt", mcp.Required(), mcp.Description("English language description of the policy to evaluate")),
+          ), evaluatePolicyHandler)
+
       if err := server.ServeStdio(s); err != nil {
           log.Fatal(err)
       }                                                                                                                                                                                       
@@ -101,9 +101,50 @@ func explainPolicyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
    return mcp.NewToolResultText(result), nil
    }
 
+func generatePolicyTestsHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+   args := req.Params.Arguments.(map[string]any)
+   englishPrompt := args["prompt"].(string)
+   msg, err := anthropicClient.Messages.New(ctx, anthropic.MessageNewParams{
+      Model:     anthropic.ModelClaudeSonnet4_5,
+      MaxTokens: 2048,
+      System: []anthropic.TextBlockParam{
+         {Text: "You are a kyverno expert. When given an english language prompt description for a policy, generate a suite of 10 tests for it. Return a kyverno-test.yaml + JSON list of resource files."},
+      },
+      Messages: []anthropic.MessageParam{
+         anthropic.NewUserMessage(anthropic.NewTextBlock(
+            fmt.Sprintf("Please generate a test suite for a policy that does the following: %s. In your suite also include sample resources.),", englishPrompt),
+            )),
+         },
+   })
+
+   if err != nil {
+      return nil, err
+   }
+
+   result := fmt.Sprintf("JSON list of tests and resources:%s\n", msg)
+   return mcp.NewToolResultText(result), nil
+}
+
 func evaluatePolicyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {                                                                                     
    args := req.Params.Arguments.(map[string]any)
-   _ = args["policy"].(string)
-   _ = args["resource"].(string)
-   return mcp.NewToolResultText("Evaluation result: PASS (stub)"), nil                                                                                                                     
-}    
+   englishPrompt := args["prompt"].(string)
+   msg, err := anthropicClient.Messages.New(ctx, anthropic.MessageNewParams{
+      Model:     anthropic.ModelClaudeSonnet4_5,
+      MaxTokens: 2048,
+      System: []anthropic.TextBlockParam{
+         {Text: "You are a kyverno expert. When given an english language prompt description for a policy, generate a suite of 10 tests for it."},
+      },
+      Messages: []anthropic.MessageParam{
+         anthropic.NewUserMessage(anthropic.NewTextBlock(
+            fmt.Sprintf("Please generate a test suite for a policy that does the following: %s. In your suite also include sample resources. Return it as a JSON list with key value pairs of, test and resource yamls.", englishPrompt),
+            )),
+         },
+   })
+
+   if err != nil {
+      return nil, err
+   }
+
+   result := fmt.Sprintf("JSON list of tests and resources:%s\n", msg)
+   return mcp.NewToolResultText(result), nil
+}
